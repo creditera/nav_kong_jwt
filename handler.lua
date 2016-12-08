@@ -3,14 +3,13 @@ local BasePlugin = require "kong.plugins.base_plugin"
 local cache = require "kong.tools.database_cache"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
-local jwt_decoder = require "kong.plugins.jwt.jwt_parser"
+local jwt_decoder = require "kong.plugins.nav_kong_jwt.jwt_parser"
 local string_format = string.format
 local ngx_re_gmatch = ngx.re.gmatch
 
+local NavJwtHandler = BasePlugin:extend()
 
-local JwtHandler = BasePlugin:extend()
-
-JwtHandler.PRIORITY = 1000
+NavJwtHandler.PRIORITY = 1000
 
 --- Retrieve a JWT in a request.
 -- Checks for the JWT in URI parameters, then in the `Authorization` header.
@@ -45,39 +44,69 @@ local function retrieve_token(request, conf)
   end
 end
 
-function JwtHandler:new()
-  JwtHandler.super.new(self, "jwt")
+function NavJwtHandler:new()
+  NavJwtHandler.super.new(self, "nav_jwt")
 end
 
-function JwtHandler:access(conf)
-  JwtHandler.super.access(self)
+function NavJwtHandler:access(conf)
+  NavJwtHandler.super.access(self)
+  response_body = {}
+  response_body["meta"] = {}
+  response_body["errors"] = {}
+  error_body = {}
+  error_body.type = "authorization_error"
+
   local token, err = retrieve_token(ngx.req, conf)
   if err then
-    return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
+    error_body.code = "unspecified_error"
+    error_body.message = "An unspecified error has occurred."..to_string(err)
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_INTERNAL_SERVER_ERROR(response_body)
   end
 
   local ttype = type(token)
   if ttype ~= "string" then
     if ttype == "nil" then
-      return responses.send_HTTP_UNAUTHORIZED()
+      error_body.code = "no_credentials"
+      error_body.message = "No credentials supplied. Please supply a JWT token in the Authorization header."
+      response_body.errors[1] = error_body
+
+      return responses.send_HTTP_UNAUTHORIZED(response_body)
     elseif ttype == "table" then
-      return responses.send_HTTP_UNAUTHORIZED("Multiple tokens provided")
+      error_body.code = "multiple_tokens_provided"
+      error_body.message = "You've supplied multiple tokens in your request. Please limit your requests to provide a single authorization token."
+      response_body.errors[1] = error_body
+
+      return responses.send_HTTP_UNAUTHORIZED(response_body)
     else
-      return responses.send_HTTP_UNAUTHORIZED("Unrecognizable token")
+      error_body.code = "unrecognizable_token"
+      error_body.message = "You've supplied an unrecognizable token. Please reform your authorization token and try again."
+      response_body.errors[1] = error_body
+
+      return responses.send_HTTP_UNAUTHORIZED(response_body)
     end
   end
-  
+
   -- Decode token to find out who the consumer is
   local jwt, err = jwt_decoder:new(token)
   if err then
-    return responses.send_HTTP_UNAUTHORIZED("Bad token; "..tostring(err))
+    error_body.code = "bad_token"
+    error_body.message = "Bad token; "..tostring(err)
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_UNAUTHORIZED(response_body)
   end
 
   local claims = jwt.claims
 
   local jwt_secret_key = claims[conf.key_claim_name]
   if not jwt_secret_key then
-    return responses.send_HTTP_UNAUTHORIZED("No mandatory '"..conf.key_claim_name.."' in claims")
+    error_body.code = "missing_claims"
+    error_body.message = "No mandatory '"..conf.key_claim_name.."' in claims"
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_UNAUTHORIZED(response_body)
   end
 
   -- Retrieve the secret
@@ -91,34 +120,56 @@ function JwtHandler:access(conf)
   end)
 
   if not jwt_secret then
-    return responses.send_HTTP_FORBIDDEN("No credentials found for given '"..conf.key_claim_name.."'")
+    error_body.code = "missing_credentials"
+    error_body.message = "No credentials found for given '"..conf.key_claim_name.."'"
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_FORBIDDEN(response_body)
   end
 
-  local algorithm = jwt_secret.algorithm or "HS256"
+  local algorithm = "HS512"
 
   -- Verify "alg"
   if jwt.header.alg ~= algorithm then
-    return responses.send_HTTP_FORBIDDEN("Invalid algorithm")
+    error_body.code = "invalid_algorithm"
+    error_body.message = "The algorithm you supplied is invalid; tokens must be formed with the HS512 algorithm."
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_FORBIDDEN(response_body)
   end
 
-  local jwt_secret_value = algorithm == "HS256" and jwt_secret.secret or jwt_secret.rsa_public_key
+  local jwt_secret_value = algorithm == "HS512" and jwt_secret.secret or jwt_secret.rsa_public_key
   if conf.secret_is_base64 then
     jwt_secret_value = jwt:b64_decode(jwt_secret_value)
   end
 
   if not jwt_secret_value then
-    return responses.send_HTTP_FORBIDDEN("Invalid key/secret")
+    error_body.code = "invalid_key_or_secret"
+    error_body.message = "The key or secret you provided was invalid."
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_FORBIDDEN(response_body)
   end
-  
+
   -- Now verify the JWT signature
   if not jwt:verify_signature(jwt_secret_value) then
-    return responses.send_HTTP_FORBIDDEN("Invalid signature")
+    error_body.code = "invalid_signature"
+    error_body.message = "The signature of the JWT provided was invalid."
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_FORBIDDEN(response_body)
   end
 
   -- Verify the JWT registered claims
   local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
   if not ok_claims then
-    return responses.send_HTTP_FORBIDDEN(errors)
+    i = 1
+    for _, error_table in pairs(errors) do
+      response_body["errors"][i] = error_table
+      i = i + 1
+    end
+
+    return responses.send_HTTP_FORBIDDEN(response_body)
   end
 
   -- Retrieve the consumer
@@ -132,14 +183,21 @@ function JwtHandler:access(conf)
 
   -- However this should not happen
   if not consumer then
-    return responses.send_HTTP_FORBIDDEN(string_format("Could not find consumer for '%s=%s'", conf.key_claim_name, jwt_secret_key))
+    error_body.code = "consumer_not_found"
+    error_body.message = string_format("Could not find consumer for '%s'", conf.key_claim_name)
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_FORBIDDEN(response_body)
   end
 
   ngx.req.set_header(constants.HEADERS.CONSUMER_ID, consumer.id)
   ngx.req.set_header(constants.HEADERS.CONSUMER_CUSTOM_ID, consumer.custom_id)
+  ngx.req.set_header("X-Account-ID", claims.sub)
+  ngx.req.set_header("X-Actual-Sub", claims.actual_sub)
+  ngx.req.set_header("X-Session-ID", claims.ses)
   ngx.req.set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
   ngx.ctx.authenticated_credential = jwt_secret
   ngx.ctx.authenticated_consumer = consumer
 end
 
-return JwtHandler
+return NavJwtHandler

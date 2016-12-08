@@ -22,7 +22,7 @@ local decode_base64 = ngx.decode_base64
 local alg_sign = {
   ["HS256"] = function(data, key) return crypto.hmac.digest("sha256", data, key, true) end,
   --["HS384"] = function(data, key) return crypto.hmac.digest("sha384", data, key, true) end,
-  --["HS512"] = function(data, key) return crypto.hmac.digest("sha512", data, key, true) end
+  ["HS512"] = function(data, key) return crypto.hmac.digest("sha512", data, key, true) end,
   ["RS256"] = function(data, key) return crypto.sign('sha256', data, crypto.pkey.from_pem(key, true)) end
 }
 
@@ -30,7 +30,7 @@ local alg_sign = {
 local alg_verify = {
   ["HS256"] = function(data, signature, key) return signature == alg_sign["HS256"](data, key) end,
   --["HS384"] = function(data, signature, key) return signature == alg_sign["HS384"](data, key) end,
-  --["HS512"] = function(data, signature, key) return signature == alg_sign["HS512"](data, key) end
+  ["HS512"] = function(data, signature, key) return signature == alg_sign["HS512"](data, key) end,
   ["RS256"] = function(data, signature, key)
     local pkey = assert(crypto.pkey.from_pem(key),"Consumer Public Key is Invalid")
     return crypto.verify('sha256', data, signature, pkey)
@@ -134,7 +134,7 @@ local function encode_token(data, key, alg, header)
   if type(key) ~= "string" then error("Argument #2 must be string", 2) end
   if header and type(header) ~= "table" then error("Argument #4 must be a table", 2) end
 
-  alg = alg or "HS256"
+  alg = alg or "HS512"
 
   if not alg_sign[alg] then
     error("Algorithm not supported", 2)
@@ -196,7 +196,12 @@ local registered_claims = {
     type = "number",
     check = function(nbf)
       if nbf > ngx_time() then
-        return "token not valid yet"
+        response = {}
+        response["type"] = "authorization_error"
+        response["code"] = "token_not_valid"
+        response["message"] = "Your authorization is not valid yet. Please wait and try your request again."
+
+        return response
       end
     end
   },
@@ -204,7 +209,12 @@ local registered_claims = {
     type = "number",
     check = function(exp)
       if exp <= ngx_time() then
-        return "token expired"
+        response = {}
+        response["type"] = "authorization_error"
+        response["code"] = "token_expired"
+        response["message"] = "Your authorization has expired. Please recreate your token and try your request again."
+
+        return response
       end
     end
   }
