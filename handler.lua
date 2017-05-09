@@ -109,59 +109,16 @@ function NavJwtHandler:access(conf)
 
   local claims = jwt.claims
 
-  local jwt_secret_key = claims[conf.key_claim_name]
-  if not jwt_secret_key then
+  local jwt_consumer_username = claims[conf.consumer_username_claim_name]
+  if not jwt_consumer_username then
     error_body.code = "missing_claims"
-    error_body.message = "No mandatory '"..conf.key_claim_name.."' in claims"
+    error_body.message = "No mandatory '"..conf.consumer_username_claim_name.."' in claims"
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_UNAUTHORIZED(response_body)
   end
 
-  -- Retrieve the secret
-  local jwt_secret = cache.get_or_set(cache.jwtauth_credential_key(jwt_secret_key),
-
-   function()
-    local rows, err = singletons.dao.jwt_secrets:find_all {key = jwt_secret_key}
-    if err then
-      return responses.send_HTTP_INTERNAL_SERVER_ERROR()
-    elseif #rows > 0 then
-      return rows[1]
-    end
-  end)
-
-  if not jwt_secret then
-    error_body.code = "missing_credentials"
-    error_body.message = "No credentials found for given '"..conf.key_claim_name.."'"
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
-
   local algorithm = "HS512"
-
-  -- Verify "alg"
-  if jwt.header.alg ~= algorithm then
-    error_body.code = "invalid_algorithm"
-    error_body.message = "The algorithm you supplied is invalid; tokens must be formed with the HS512 algorithm."
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
-
-  local jwt_secret_value = algorithm == "HS512" and jwt_secret.secret or jwt_secret.rsa_public_key
-  if conf.secret_is_base64 then
-    jwt_secret_value = jwt:b64_decode(jwt_secret_value)
-  end
-
-  if not jwt_secret_value then
-    error_body.code = "invalid_key_or_secret"
-    error_body.message = "The key or secret you provided was invalid."
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
-
 
   -- Verify the JWT registered claims
   local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
@@ -176,18 +133,28 @@ function NavJwtHandler:access(conf)
   end
 
   -- Retrieve the consumer
-  local consumer = cache.get_or_set(cache.consumer_key(jwt_secret_key), function()
-    local consumer, err = singletons.dao.consumers:find {id = jwt_secret.consumer_id}
+  local consumer_key = "consumer_from_username:" .. jwt_consumer_username
+  local consumer = cache.get_or_set(consumer_key, function()
+    local consumer_rows, err = singletons.dao.consumers:find_all {username = jwt_consumer_username}
+    if #consumer_rows > 1 then
+      error_body.code = "non_unique_consumer"
+      error_body.message = "There are multiple consumers associated with your iss"
+      response_body.errors[1] = error_body
+      return responses.send_HTTP_INTERNAL_SERVER_ERROR(response_body)
+    end
+
     if err then
       return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
     end
+
+    local consumer = consumer_rows[1]
     return consumer
   end)
 
   -- However this should not happen
   if not consumer then
     error_body.code = "consumer_not_found"
-    error_body.message = string_format("Could not find consumer for '%s'", conf.key_claim_name)
+    error_body.message = string_format("Could not find consumer for '%s'", conf.consumer_username_claim_name)
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_FORBIDDEN(response_body)
@@ -199,7 +166,7 @@ function NavJwtHandler:access(conf)
   ngx.req.set_header("X-Actual-Sub", claims.actual_sub)
   ngx.req.set_header("X-Session-ID", claims.ses)
   ngx.req.set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
-  ngx.ctx.authenticated_credential = jwt_secret
+  ngx.ctx.authenticated_credential = consumer.username
   ngx.ctx.authenticated_consumer = consumer
 end
 
