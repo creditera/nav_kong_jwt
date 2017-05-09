@@ -134,6 +134,12 @@ function NavJwtHandler:access(conf)
 
   -- Retrieve the consumer
   local consumer_key = "consumer_from_username:" .. jwt_consumer_username
+  -- IMPORANT ONLY WORKS WITH KONG 0.9.x!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  -- Version 0.10.x of Kong has a breaking change to the cache api.
+  -- cache.get_or_set now takes a ttl argument between the key and callback.
+  -- As a result, when we upgrade Kong to 0.10.x we need to also change the next
+  -- line of code to:
+  -- local consumer = cache.get_or_set(consumer_key, nil, function()
   local consumer = cache.get_or_set(consumer_key, function()
     local consumer_rows, err = singletons.dao.consumers:find_all {username = jwt_consumer_username}
     if #consumer_rows > 1 then
