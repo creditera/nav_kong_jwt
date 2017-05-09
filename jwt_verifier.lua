@@ -6,9 +6,9 @@ local http = require("socket.http")
 local _M = {}
 _M.__index = _M
 
-function _M:verify(token)
+function _M:verify(verification_host, token)
   body, code, headers = http.request {
-    url = "http://10.10.54.200:3030/verifications",
+    url = "http://" .. verification_host .. "/verifications",
     headers = {
       ["x-authentication-jwt"] = token
     }

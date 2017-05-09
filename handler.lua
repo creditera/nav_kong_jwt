@@ -89,7 +89,7 @@ function NavJwtHandler:access(conf)
   end
 
   -- Now verify the JWT signature
-  if not jwt_verifier:verify(token) then
+  if not jwt_verifier:verify(conf.verification_host, token) then
     error_body.code = "unauthorized"
     error_body.message = "Your token does not provide access to the system. Please generate a new token and try again."
     response_body.errors[1] = error_body
@@ -97,7 +97,6 @@ function NavJwtHandler:access(conf)
     return responses.send_HTTP_UNAUTHORIZED(response_body)
   end
 
-  ngx.log(ngx.NOTICE, jwt_verifier:verify(token))
   -- Decode token to find out who the consumer is
   local jwt, err = jwt_decoder:new(token)
   if err then
