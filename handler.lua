@@ -4,6 +4,7 @@ local cache = require "kong.tools.database_cache"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
 local jwt_decoder = require "kong.plugins.nav_kong_jwt.jwt_parser"
+local jwt_verifier = require "kong.plugins.nav_kong_jwt.jwt_verifier"
 local string_format = string.format
 local ngx_re_gmatch = ngx.re.gmatch
 
@@ -28,7 +29,7 @@ local function retrieve_token(request, conf)
 
   local authorization_header = request.get_headers()["authorization"]
   if authorization_header then
-    local iterator, iter_err = ngx_re_gmatch(authorization_header, "\\s*[Bb]earer\\s+(.+)")
+    local iterator, iter_err = ngx_re_gmatch(authorization_header, "\\s*[Tt]oken\\s+(.+)")
     if not iterator then
       return nil, iter_err
     end
@@ -51,7 +52,6 @@ end
 function NavJwtHandler:access(conf)
   NavJwtHandler.super.access(self)
   response_body = {}
-  response_body["meta"] = {}
   response_body["errors"] = {}
   error_body = {}
   error_body.type = "authorization_error"
@@ -88,6 +88,16 @@ function NavJwtHandler:access(conf)
     end
   end
 
+  -- Now verify the JWT signature
+  if not jwt_verifier:verify(token) then
+    error_body.code = "unauthorized"
+    error_body.message = "Your token does not provide access to the system. Please generate a new token and try again."
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_UNAUTHORIZED(response_body)
+  end
+
+  ngx.log(ngx.NOTICE, jwt_verifier:verify(token))
   -- Decode token to find out who the consumer is
   local jwt, err = jwt_decoder:new(token)
   if err then
@@ -110,7 +120,9 @@ function NavJwtHandler:access(conf)
   end
 
   -- Retrieve the secret
-  local jwt_secret = cache.get_or_set(cache.jwtauth_credential_key(jwt_secret_key), function()
+  local jwt_secret = cache.get_or_set(cache.jwtauth_credential_key(jwt_secret_key),
+
+   function()
     local rows, err = singletons.dao.jwt_secrets:find_all {key = jwt_secret_key}
     if err then
       return responses.send_HTTP_INTERNAL_SERVER_ERROR()
@@ -151,14 +163,6 @@ function NavJwtHandler:access(conf)
     return responses.send_HTTP_FORBIDDEN(response_body)
   end
 
-  -- Now verify the JWT signature
-  if not jwt:verify_signature(jwt_secret_value) then
-    error_body.code = "invalid_signature"
-    error_body.message = "The signature of the JWT provided was invalid."
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
 
   -- Verify the JWT registered claims
   local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
