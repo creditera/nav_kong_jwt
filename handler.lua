@@ -160,7 +160,7 @@ function NavJwtHandler:access(conf)
   -- However this should not happen
   if not consumer then
     error_body.code = "consumer_not_found"
-    error_body.message = string_format("Could not find consumer for '%s'", conf.consumer_username_claim_name)
+    error_body.message = string_format("Could not find consumer for '%s'", conf.consumer_custom_id_claim_name)
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_FORBIDDEN(response_body)
