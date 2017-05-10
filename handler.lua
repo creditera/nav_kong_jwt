@@ -172,7 +172,7 @@ function NavJwtHandler:access(conf)
   ngx.req.set_header("X-Actual-Sub", claims.actual_sub)
   ngx.req.set_header("X-Session-ID", claims.ses)
   ngx.req.set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
-  ngx.ctx.authenticated_credential = consumer.username
+  ngx.ctx.authenticated_credential = consumer.id
   ngx.ctx.authenticated_consumer = consumer
 end
 
