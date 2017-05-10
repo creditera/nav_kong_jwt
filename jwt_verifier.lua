@@ -1,14 +1,14 @@
--- Zuul JWT verifiecation module
--- Calls out to zuul in order to verify a users credentials
+-- Zuul JWT verification module
+-- Calls out to an upstream zuul in order to verify a user's jwt and session
 
 local http = require("socket.http")
 
 local _M = {}
 _M.__index = _M
 
-function _M:verify(verification_host, token)
+function _M:verify(verification_url, token)
   body, code, headers = http.request {
-    url = "http://" .. verification_host .. "/verifications",
+    url = verification_url,
     headers = {
       ["x-authentication-jwt"] = token
     }

@@ -88,10 +88,10 @@ function NavJwtHandler:access(conf)
     end
   end
 
-  -- Now verify the JWT signature
-  if not jwt_verifier:verify(conf.verification_host, token) then
+  -- Now use the verification module to verify the jwt on the upstream verification server
+  if not jwt_verifier:verify(conf.verification_url, token) then
     error_body.code = "unauthorized"
-    error_body.message = "Your token does not provide access to the system. Please generate a new token and try again."
+    error_body.message = "Your token could not be verified. Please retrieve a new authentication token and try again."
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_UNAUTHORIZED(response_body)
