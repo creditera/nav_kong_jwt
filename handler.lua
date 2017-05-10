@@ -109,10 +109,10 @@ function NavJwtHandler:access(conf)
 
   local claims = jwt.claims
 
-  local jwt_consumer_username = claims[conf.consumer_username_claim_name]
-  if not jwt_consumer_username then
+  local jwt_consumer_custom_id = claims[conf.consumer_custom_id_claim_name]
+  if not jwt_consumer_custom_id then
     error_body.code = "missing_claims"
-    error_body.message = "No mandatory '"..conf.consumer_username_claim_name.."' in claims"
+    error_body.message = "No mandatory '"..conf.consumer_custom_id_claim_name.."' in claims"
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_UNAUTHORIZED(response_body)
@@ -133,7 +133,7 @@ function NavJwtHandler:access(conf)
   end
 
   -- Retrieve the consumer
-  local consumer_key = "consumer_from_username:" .. jwt_consumer_username
+  local consumer_key = "consumer_from_custom_id:" .. jwt_consumer_custom_id
   -- IMPORANT ONLY WORKS WITH KONG 0.9.x!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   -- Version 0.10.x of Kong has a breaking change to the cache api.
   -- cache.get_or_set now takes a ttl argument between the key and callback.
@@ -141,7 +141,7 @@ function NavJwtHandler:access(conf)
   -- line of code to:
   -- local consumer = cache.get_or_set(consumer_key, nil, function()
   local consumer = cache.get_or_set(consumer_key, function()
-    local consumer_rows, err = singletons.dao.consumers:find_all {username = jwt_consumer_username}
+    local consumer_rows, err = singletons.dao.consumers:find_all {custom_id = jwt_consumer_custom_id}
     if #consumer_rows > 1 then
       error_body.code = "non_unique_consumer"
       error_body.message = "There are multiple consumers associated with your iss"
