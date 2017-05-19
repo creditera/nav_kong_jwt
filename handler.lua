@@ -4,6 +4,7 @@ local cache = require "kong.tools.database_cache"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
 local jwt_decoder = require "kong.plugins.nav_kong_jwt.jwt_parser"
+local jwt_verifier = require "kong.plugins.nav_kong_jwt.jwt_verifier"
 local string_format = string.format
 local ngx_re_gmatch = ngx.re.gmatch
 
@@ -28,7 +29,7 @@ local function retrieve_token(request, conf)
 
   local authorization_header = request.get_headers()["authorization"]
   if authorization_header then
-    local iterator, iter_err = ngx_re_gmatch(authorization_header, "\\s*[Bb]earer\\s+(.+)")
+    local iterator, iter_err = ngx_re_gmatch(authorization_header, "\\s*[Tt]oken\\s+(.+)")
     if not iterator then
       return nil, iter_err
     end
@@ -51,7 +52,6 @@ end
 function NavJwtHandler:access(conf)
   NavJwtHandler.super.access(self)
   response_body = {}
-  response_body["meta"] = {}
   response_body["errors"] = {}
   error_body = {}
   error_body.type = "authorization_error"
@@ -88,6 +88,15 @@ function NavJwtHandler:access(conf)
     end
   end
 
+  -- Now use the verification module to verify the jwt on the upstream verification server
+  if not jwt_verifier:verify(conf.verification_url, token) then
+    error_body.code = "unauthorized"
+    error_body.message = "Your token could not be verified. Please retrieve a new authentication token and try again."
+    response_body.errors[1] = error_body
+
+    return responses.send_HTTP_UNAUTHORIZED(response_body)
+  end
+
   -- Decode token to find out who the consumer is
   local jwt, err = jwt_decoder:new(token)
   if err then
@@ -100,65 +109,16 @@ function NavJwtHandler:access(conf)
 
   local claims = jwt.claims
 
-  local jwt_secret_key = claims[conf.key_claim_name]
-  if not jwt_secret_key then
+  local jwt_consumer_custom_id = claims[conf.consumer_custom_id_claim_name]
+  if not jwt_consumer_custom_id then
     error_body.code = "missing_claims"
-    error_body.message = "No mandatory '"..conf.key_claim_name.."' in claims"
+    error_body.message = "No mandatory '"..conf.consumer_custom_id_claim_name.."' in claims"
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_UNAUTHORIZED(response_body)
   end
 
-  -- Retrieve the secret
-  local jwt_secret = cache.get_or_set(cache.jwtauth_credential_key(jwt_secret_key), function()
-    local rows, err = singletons.dao.jwt_secrets:find_all {key = jwt_secret_key}
-    if err then
-      return responses.send_HTTP_INTERNAL_SERVER_ERROR()
-    elseif #rows > 0 then
-      return rows[1]
-    end
-  end)
-
-  if not jwt_secret then
-    error_body.code = "missing_credentials"
-    error_body.message = "No credentials found for given '"..conf.key_claim_name.."'"
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
-
   local algorithm = "HS512"
-
-  -- Verify "alg"
-  if jwt.header.alg ~= algorithm then
-    error_body.code = "invalid_algorithm"
-    error_body.message = "The algorithm you supplied is invalid; tokens must be formed with the HS512 algorithm."
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
-
-  local jwt_secret_value = algorithm == "HS512" and jwt_secret.secret or jwt_secret.rsa_public_key
-  if conf.secret_is_base64 then
-    jwt_secret_value = jwt:b64_decode(jwt_secret_value)
-  end
-
-  if not jwt_secret_value then
-    error_body.code = "invalid_key_or_secret"
-    error_body.message = "The key or secret you provided was invalid."
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
-
-  -- Now verify the JWT signature
-  if not jwt:verify_signature(jwt_secret_value) then
-    error_body.code = "invalid_signature"
-    error_body.message = "The signature of the JWT provided was invalid."
-    response_body.errors[1] = error_body
-
-    return responses.send_HTTP_FORBIDDEN(response_body)
-  end
 
   -- Verify the JWT registered claims
   local ok_claims, errors = jwt:verify_registered_claims(conf.claims_to_verify)
@@ -173,18 +133,34 @@ function NavJwtHandler:access(conf)
   end
 
   -- Retrieve the consumer
-  local consumer = cache.get_or_set(cache.consumer_key(jwt_secret_key), function()
-    local consumer, err = singletons.dao.consumers:find {id = jwt_secret.consumer_id}
+  local consumer_key = "consumer_from_custom_id:" .. jwt_consumer_custom_id
+  -- IMPORANT ONLY WORKS WITH KONG 0.9.x!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  -- Version 0.10.x of Kong has a breaking change to the cache api.
+  -- cache.get_or_set now takes a ttl argument between the key and callback.
+  -- As a result, when we upgrade Kong to 0.10.x we need to also change the next
+  -- line of code to:
+  -- local consumer = cache.get_or_set(consumer_key, nil, function()
+  local consumer = cache.get_or_set(consumer_key, function()
+    local consumer_rows, err = singletons.dao.consumers:find_all {custom_id = jwt_consumer_custom_id}
+    if #consumer_rows > 1 then
+      error_body.code = "non_unique_consumer"
+      error_body.message = "There are multiple consumers associated with your iss"
+      response_body.errors[1] = error_body
+      return responses.send_HTTP_INTERNAL_SERVER_ERROR(response_body)
+    end
+
     if err then
       return responses.send_HTTP_INTERNAL_SERVER_ERROR(err)
     end
+
+    local consumer = consumer_rows[1]
     return consumer
   end)
 
   -- However this should not happen
   if not consumer then
     error_body.code = "consumer_not_found"
-    error_body.message = string_format("Could not find consumer for '%s'", conf.key_claim_name)
+    error_body.message = string_format("Could not find consumer for '%s'", conf.consumer_custom_id_claim_name)
     response_body.errors[1] = error_body
 
     return responses.send_HTTP_FORBIDDEN(response_body)
@@ -196,7 +172,7 @@ function NavJwtHandler:access(conf)
   ngx.req.set_header("X-Actual-Sub", claims.actual_sub)
   ngx.req.set_header("X-Session-ID", claims.ses)
   ngx.req.set_header(constants.HEADERS.CONSUMER_USERNAME, consumer.username)
-  ngx.ctx.authenticated_credential = jwt_secret
+  ngx.ctx.authenticated_credential = consumer.id
   ngx.ctx.authenticated_consumer = consumer
 end
 
