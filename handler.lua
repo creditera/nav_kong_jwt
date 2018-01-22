@@ -139,8 +139,8 @@ function NavJwtHandler:access(conf)
   -- cache.get_or_set now takes a ttl argument between the key and callback.
   -- As a result, when we upgrade Kong to 0.10.x we need to also change the next
   -- line of code to:
-  -- local consumer = cache.get_or_set(consumer_key, nil, function()
-  local consumer = cache.get_or_set(consumer_key, function()
+  local consumer = cache.get_or_set(consumer_key, nil, function()
+  -- local consumer = cache.get_or_set(consumer_key, function()
     local consumer_rows, err = singletons.dao.consumers:find_all {custom_id = jwt_consumer_custom_id}
     if #consumer_rows > 1 then
       error_body.code = "non_unique_consumer"
