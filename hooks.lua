@@ -1,5 +1,7 @@
 local events = require "kong.core.events"
-local cache = require "kong.tools.database_cache"
+local singletons = require "kong.singletons"
+-- local cache = require "kong.tools.database_cache"
+local cache = singletons.cache
 
 local function invalidate(message_t)
   if message_t.collection == "jwt_secrets" then

@@ -1,6 +1,7 @@
 local singletons = require "kong.singletons"
 local BasePlugin = require "kong.plugins.base_plugin"
-local cache = require "kong.tools.database_cache"
+local cache = singletons.cache
+-- local cache = require "kong.tools.database_cache"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
 local jwt_decoder = require "kong.plugins.nav_kong_jwt.jwt_parser"
