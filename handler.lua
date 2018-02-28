@@ -1,7 +1,5 @@
 local singletons = require "kong.singletons"
 local BasePlugin = require "kong.plugins.base_plugin"
-local cache = singletons.cache
--- local cache = require "kong.tools.database_cache"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
 local jwt_decoder = require "kong.plugins.nav_kong_jwt.jwt_parser"
@@ -135,12 +133,13 @@ function NavJwtHandler:access(conf)
 
   -- Retrieve the consumer
   local consumer_key = "consumer_from_custom_id:" .. jwt_consumer_custom_id
+  local cache = singletons.cache
   -- IMPORANT ONLY WORKS WITH KONG 0.9.x!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   -- Version 0.10.x of Kong has a breaking change to the cache api.
   -- cache.get_or_set now takes a ttl argument between the key and callback.
   -- As a result, when we upgrade Kong to 0.10.x we need to also change the next
   -- line of code to:
-  local consumer = cache.get_or_set(consumer_key, nil, function()
+  local consumer,cache_err = cache:get(consumer_key, nil, function()
   -- local consumer = cache.get_or_set(consumer_key, function()
     local consumer_rows, err = singletons.dao.consumers:find_all {custom_id = jwt_consumer_custom_id}
     if #consumer_rows > 1 then
@@ -157,6 +156,11 @@ function NavJwtHandler:access(conf)
     local consumer = consumer_rows[1]
     return consumer
   end)
+
+  if cache_err then
+    return responses.send_HTTP_INTERNAL_SERVER_ERROR(cache_err)
+  end
+
 
   -- However this should not happen
   if not consumer then
